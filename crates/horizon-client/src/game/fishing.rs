@@ -146,6 +146,26 @@ fn triangle(r: &mut impl RandomSource, mode: f64, deviation: f64) -> f64 {
 fn rebound(velocity: Vec3, hit: Vec3, at: Vec3) -> Vec3 {
     velocity.normalize().scale(hit.distance_squared(at))
 }
+/// `FishingHook(player, ...)`'s cast: the eye offset along the yaw, and the
+/// unscaled direction (`Mth.cos`/`Mth.sin`'s quantized table, not the
+/// platform's own trig). At a pitch of exactly 90 (as far down as the camera
+/// goes) the table's `Mth.cos` is an exact 0.0, so `-(xSin / xCos)` is a
+/// clean, consistently-signed `Infinity` that clamps to -5.0; the platform's
+/// `cos` of the float closest to -90 degrees rounds to a tiny *positive*
+/// stray value instead, flipping the clamp to +5.0 and throwing the bobber
+/// up into the sky rather than down toward the ground in front of the player.
+fn cast_offset_and_direction(yaw: f32, pitch: f32) -> (f64, f64, Vec3) {
+    let y_cos = trig::cos(f64::from(-yaw * trig::DEG_TO_RAD - std::f32::consts::PI));
+    let y_sin = trig::sin(f64::from(-yaw * trig::DEG_TO_RAD - std::f32::consts::PI));
+    let x_cos = -trig::cos(f64::from(-pitch * trig::DEG_TO_RAD));
+    let x_sin = trig::sin(f64::from(-pitch * trig::DEG_TO_RAD));
+    let direction = Vec3::new(
+        f64::from(-y_sin),
+        f64::from((-(x_sin / x_cos)).clamp(-5.0, 5.0)),
+        f64::from(-y_cos),
+    );
+    (f64::from(y_sin), f64::from(y_cos), direction)
+}
 impl Game<'_> {
     fn holds_rod(&self) -> bool {
         self.held()
@@ -201,20 +221,12 @@ impl Game<'_> {
             let lure = stack.enchantment_level("minecraft:lure") as i32 * 5 * 20;
             let luck = stack.enchantment_level("minecraft:luck_of_the_sea") as i32;
             let (yaw, pitch) = (self.yaw, self.pitch);
-            let y_cos = (-yaw.to_radians() - std::f32::consts::PI).cos();
-            let y_sin = (-yaw.to_radians() - std::f32::consts::PI).sin();
-            let x_cos = -(-pitch.to_radians()).cos();
-            let x_sin = (-pitch.to_radians()).sin();
+            let (y_sin, y_cos, mut v) = cast_offset_and_direction(yaw, pitch);
             let eye_y = p.position.y + f64::from(p.dimensions.eye_height);
             let start = Vec3::new(
-                p.position.x - f64::from(y_sin) * 0.3,
+                p.position.x - y_sin * 0.3,
                 eye_y,
-                p.position.z - f64::from(y_cos) * 0.3,
-            );
-            let mut v = Vec3::new(
-                f64::from(-y_sin),
-                f64::from((-(x_sin / x_cos)).clamp(-5.0, 5.0)),
-                f64::from(-y_cos),
+                p.position.z - y_cos * 0.3,
             );
             let len = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
             let r = &mut self.world.random;
@@ -1474,9 +1486,35 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{entity_hit_margin, first_entity_hit, pull_item, rebound};
+    use super::{
+        cast_offset_and_direction, entity_hit_margin, first_entity_hit, pull_item, rebound,
+    };
     use horizon_client::{entities::ItemEntity, items::ItemStack};
     use horizon_core::geometry::{Aabb, Vec3};
+
+    /// At a pitch of exactly 90 (the camera's own clamp, reached by just
+    /// looking as far down as possible) `Mth.cos`'s quantized table lands on
+    /// an exact 0.0, so vanilla's `-(xSin / xCos)` clamps to -5.0 every time:
+    /// the bobber is thrown down, landing in front of the player. The
+    /// platform's own `cos` of the float nearest -90 degrees rounds to a
+    /// tiny *positive* value instead (`cos(-FRAC_PI_2_f32) ~= 4.37e-8`), which
+    /// flips the clamped ratio to +5.0 and threw the bobber into the sky
+    /// (#7440) - confirmed by decompiling the pinned 26.3 client and reading
+    /// `FishingHook`'s constructor at the same inputs.
+    #[test]
+    fn casting_straight_down_throws_the_hook_down_not_into_the_sky() {
+        let (_, _, direction) = cast_offset_and_direction(0.0, 90.0);
+        assert_eq!(direction.y, -5.0);
+    }
+
+    /// Just short of straight down, both the table and the platform's `cos`
+    /// agree (same sign, same clamp): only the exact pitch the camera clamp
+    /// reaches flips.
+    #[test]
+    fn casting_almost_straight_down_still_throws_the_hook_down() {
+        let (_, _, direction) = cast_offset_and_direction(0.0, 89.999);
+        assert_eq!(direction.y, -5.0);
+    }
 
     /// `HitResult.distanceTo` is squared: a hit 0.5 away rebounds at 0.25.
     #[test]
