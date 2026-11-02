@@ -124,7 +124,7 @@ pub fn native_world_drawn(world: &mut WorldDrawn<'_>) {
 }
 
 /// The first-person hand is drawn (see [`HandDrawn`]), on every frame [`native_world_drawn`]
-/// runs, with no hand too. API @API:hand_drawn@.
+/// runs, with no hand too. API 364.
 #[inline(never)]
 pub fn native_hand_drawn(hand: &mut HandDrawn<'_>) {
     generated::dispatch_hand_drawn(RENDERERS.get().map_or(&[], |renderers| renderers), hand);
